@@ -188,7 +188,7 @@ app.get('/api/categories', async (req, res) => {
 app.get('/api/user-lyrics', async (req, res) => {
   try {
     const { category, search } = req.query;
-    let query = 'SELECT ul.id, ul.title, ul.content, ul.category_id, ul.filename, ul.file_size, ul.upload_date, ul.created_by, c.name as category_name, c.color as category_color, c.icon as icon FROM user_lyrics ul LEFT JOIN categories c ON ul.category_id = c.id WHERE ul.is_public = 1';
+    let query = 'SELECT ul.id, ul.title, ul.content, ul.category_id, ul.filename, ul.file_size, ul.upload_date, ul.created_by, ul.is_favorite, c.name as category_name, c.color as category_color, c.icon as icon FROM user_lyrics ul LEFT JOIN categories c ON ul.category_id = c.id WHERE ul.is_public = 1';
     const params = [];
 
     if (category) {
@@ -219,11 +219,133 @@ app.get('/api/user-lyrics', async (req, res) => {
       category_color: row.category_color,
       icon: row.icon,
       duration: null,
-      upload_date: row.upload_date
+      upload_date: row.upload_date,
+      is_favorite: row.is_favorite === 1 || row.is_favorite === true
     }));
     
     res.json(formatted);
   } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get favorites
+app.get('/api/favorites', async (req, res) => {
+  try {
+    const { category } = req.query;
+    let query = 'SELECT ul.id, ul.title, ul.content, ul.category_id, ul.filename, ul.file_size, ul.upload_date, ul.created_by, ul.is_favorite, c.name as category_name, c.color as category_color, c.icon as icon FROM user_lyrics ul LEFT JOIN categories c ON ul.category_id = c.id WHERE ul.is_favorite = 1';
+    const params = [];
+
+    if (category) {
+      query += ' AND c.name = ?';
+      params.push(category);
+    }
+
+    query += ' ORDER BY ul.upload_date DESC';
+
+    const result = await dbQuery(query, params);
+    
+    // Map to consistent format
+    const formatted = result.rows.map(row => ({
+      id: row.id,
+      trackName: row.title,
+      artistName: row.created_by || 'Unknown Artist',
+      albumName: row.filename || 'User Upload',
+      plainLyrics: row.content,
+      syncedLyrics: null,
+      instrumental: false,
+      source: 'favorite',
+      category_name: row.category_name,
+      category_color: row.category_color,
+      icon: row.icon,
+      duration: null,
+      upload_date: row.upload_date,
+      is_favorite: true
+    }));
+    
+    res.json(formatted);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Add to favorites (save API song to database)
+app.post('/api/favorites', async (req, res) => {
+  try {
+    const { title, artist, album, lyrics, syncedLyrics, categoryId, uploadId } = req.body;
+    
+    // If uploadId is provided, just toggle the favorite flag
+    if (uploadId) {
+      await dbQuery('UPDATE user_lyrics SET is_favorite = 1 WHERE id = ?', [uploadId]);
+      
+      const updated = await dbQuery(
+        'SELECT ul.*, c.name as category_name, c.color as category_color, c.icon as icon FROM user_lyrics ul LEFT JOIN categories c ON ul.category_id = c.id WHERE ul.id = ?',
+        [uploadId]
+      );
+      
+      console.log('✅ Toggled favorite for upload:', uploadId);
+      return res.json({
+        id: updated.rows[0].id,
+        trackName: updated.rows[0].title,
+        artistName: updated.rows[0].created_by,
+        albumName: updated.rows[0].filename,
+        plainLyrics: updated.rows[0].content,
+        category_name: updated.rows[0].category_name,
+        category_color: updated.rows[0].category_color,
+        icon: updated.rows[0].icon,
+        is_favorite: true
+      });
+    }
+    
+    // Otherwise, save new favorite from API
+    if (!title || !lyrics) {
+      return res.status(400).json({ error: 'Title and lyrics are required' });
+    }
+
+    console.log('⭐ Adding to favorites:', { title, artist, categoryId });
+
+    const result = await dbQuery(
+      'INSERT INTO user_lyrics (title, content, category_id, filename, created_by, is_favorite) VALUES (?, ?, ?, ?, ?, 1)',
+      [title, lyrics, categoryId, album || 'Favorite', artist || 'Unknown Artist']
+    );
+
+    const insertedId = result.rows[0].id;
+    
+    // Return the inserted record
+    const inserted = await dbQuery(
+      'SELECT ul.*, c.name as category_name, c.color as category_color, c.icon as icon FROM user_lyrics ul LEFT JOIN categories c ON ul.category_id = c.id WHERE ul.id = ?',
+      [insertedId]
+    );
+    
+    console.log('✅ Added to favorites successfully');
+    res.json({
+      id: inserted.rows[0].id,
+      trackName: inserted.rows[0].title,
+      artistName: inserted.rows[0].created_by,
+      albumName: inserted.rows[0].filename,
+      plainLyrics: inserted.rows[0].content,
+      category_name: inserted.rows[0].category_name,
+      category_color: inserted.rows[0].category_color,
+      icon: inserted.rows[0].icon,
+      is_favorite: true
+    });
+  } catch (error) {
+    console.error('❌ Favorite error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Remove from favorites
+app.delete('/api/favorites/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    await dbQuery('UPDATE user_lyrics SET is_favorite = 0 WHERE id = ?', [id]);
+    
+    console.log('✅ Removed from favorites:', id);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('❌ Remove favorite error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -292,7 +414,7 @@ app.get('/api/search', async (req, res) => {
 
     // Search user uploads
     if (!source || source === 'uploads' || source === 'all') {
-      let uploadQuery = 'SELECT ul.id, ul.title, ul.content, ul.category_id, ul.filename, ul.file_size, ul.upload_date, ul.created_by, c.name as category_name, c.color as category_color, c.icon as icon FROM user_lyrics ul LEFT JOIN categories c ON ul.category_id = c.id WHERE ul.is_public = 1';
+      let uploadQuery = 'SELECT ul.id, ul.title, ul.content, ul.category_id, ul.filename, ul.file_size, ul.upload_date, ul.created_by, ul.is_favorite, c.name as category_name, c.color as category_color, c.icon as icon FROM user_lyrics ul LEFT JOIN categories c ON ul.category_id = c.id WHERE ul.is_public = 1';
       const uploadParams = [];
 
       if (q && q.trim()) {
@@ -323,7 +445,8 @@ app.get('/api/search', async (req, res) => {
           category_name: row.category_name,
           category_color: row.category_color,
           icon: row.icon,
-          duration: null
+          duration: null,
+          is_favorite: row.is_favorite === 1 || row.is_favorite === true
         });
       });
       

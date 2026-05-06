@@ -21,9 +21,11 @@ CREATE TABLE user_lyrics (
     upload_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     is_public BOOLEAN DEFAULT true,
     created_by VARCHAR(100),
+    is_favorite BOOLEAN DEFAULT false,
     INDEX idx_category (category_id),
     INDEX idx_title (title),
-    INDEX idx_upload_date (upload_date)
+    INDEX idx_upload_date (upload_date),
+    INDEX idx_favorite (is_favorite)
 );
 
 -- Insert default categories

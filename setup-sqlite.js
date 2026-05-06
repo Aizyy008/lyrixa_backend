@@ -33,7 +33,8 @@ const db = new sqlite3.Database('./lyrixa_dev.db', (err) => {
       file_size INTEGER,
       upload_date DATETIME DEFAULT CURRENT_TIMESTAMP,
       is_public BOOLEAN DEFAULT 1,
-      created_by TEXT DEFAULT 'Erkan Aydogan'
+      created_by TEXT DEFAULT 'Erkan Aydogan',
+      is_favorite INTEGER DEFAULT 0
     );
 
     -- Insert default categories
