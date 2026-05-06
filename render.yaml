@@ -1,0 +1,55 @@
+services:
+  # Type of service
+  type: web
+  
+  # Name of your service
+  name: lyrixa-extended
+  
+  # Environment variables
+  env:
+    # PostgreSQL connection string
+    DATABASE_URL:
+      description: "PostgreSQL connection URL"
+      
+    # Node environment
+    NODE_ENV:
+      value: production
+      description: "Node environment"
+  
+  # Build configuration
+  build:
+    # Build command
+    command: "npm install"
+    
+    # Start command
+    startCommand: "npm start"
+    
+    # Directory to deploy
+    publish: "."
+    
+    # Runtime
+    runtime: node
+    
+    # Node version
+    nodeVersion: "18"
+
+  # Health check
+  healthCheck:
+    http:
+      path: /
+      port: 3000
+      initialDelaySeconds: 30
+      intervalSeconds: 10
+      timeoutSeconds: 5
+      
+  # Auto-deploy
+  autoDeploy: true
+  
+  # Instance type
+  instanceType: free
+  
+  # Region
+  region: oregon
+  
+  # Plan
+  plan: free
