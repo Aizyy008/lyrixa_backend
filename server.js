@@ -188,7 +188,7 @@ app.get('/api/categories', async (req, res) => {
 app.get('/api/user-lyrics', async (req, res) => {
   try {
     const { category, search } = req.query;
-    let query = 'SELECT ul.*, c.name as category_name, c.color as category_color, c.icon as icon FROM user_lyrics ul LEFT JOIN categories c ON ul.category_id = c.id WHERE ul.is_public = 1';
+    let query = 'SELECT ul.id, ul.title, ul.content, ul.category_id, ul.filename, ul.file_size, ul.upload_date, ul.created_by, c.name as category_name, c.color as category_color, c.icon as icon FROM user_lyrics ul LEFT JOIN categories c ON ul.category_id = c.id WHERE ul.is_public = 1';
     const params = [];
 
     if (category) {
@@ -197,14 +197,32 @@ app.get('/api/user-lyrics', async (req, res) => {
     }
 
     if (search) {
-      query += ' AND ul.title LIKE ?';
-      params.push(`%${search}%`);
+      query += ' AND (ul.title LIKE ? OR ul.content LIKE ?)';
+      params.push(`%${search}%`, `%${search}%`);
     }
 
     query += ' ORDER BY ul.upload_date DESC';
 
     const result = await dbQuery(query, params);
-    res.json(result.rows);
+    
+    // Map to consistent format
+    const formatted = result.rows.map(row => ({
+      id: row.id,
+      trackName: row.title,
+      artistName: row.created_by || 'Unknown Artist',
+      albumName: row.filename || 'User Upload',
+      plainLyrics: row.content,
+      syncedLyrics: null,
+      instrumental: false,
+      source: 'upload',
+      category_name: row.category_name,
+      category_color: row.category_color,
+      icon: row.icon,
+      duration: null,
+      upload_date: row.upload_date
+    }));
+    
+    res.json(formatted);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -219,6 +237,13 @@ app.post('/api/upload', upload.single('lyrics'), async (req, res) => {
 
     const { title, category, createdBy } = req.body;
     const content = fs.readFileSync(req.file.path, 'utf8');
+    
+    console.log('📤 Upload received:', {
+      title,
+      category,
+      contentLength: content.length,
+      filename: req.file.originalname
+    });
     
     // Auto-detect title from filename if not provided
     const finalTitle = title || path.parse(req.file.originalname).name.replace('.txt', '');
@@ -240,10 +265,19 @@ app.post('/api/upload', upload.single('lyrics'), async (req, res) => {
     // Clean up uploaded file
     fs.unlinkSync(req.file.path);
 
-    // Return the inserted record
-    const inserted = await dbQuery('SELECT ul.*, c.name as category_name, c.color as category_color, c.icon as icon FROM user_lyrics ul LEFT JOIN categories c ON ul.category_id = c.id WHERE ul.id = ?', [result.rows[0].id]);
+    // Get the inserted ID (works for both SQLite and PostgreSQL)
+    const insertedId = result.rows[0].id;
+    
+    // Return the inserted record with full details
+    const inserted = await dbQuery(
+      'SELECT ul.*, c.name as category_name, c.color as category_color, c.icon as icon FROM user_lyrics ul LEFT JOIN categories c ON ul.category_id = c.id WHERE ul.id = ?', 
+      [insertedId]
+    );
+    
+    console.log('✅ Upload successful:', inserted.rows[0]);
     res.json(inserted.rows[0]);
   } catch (error) {
+    console.error('❌ Upload error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -254,52 +288,78 @@ app.get('/api/search', async (req, res) => {
     const { q, category, source } = req.query;
     const results = [];
 
+    console.log('🔍 Search request:', { q, category, source });
+
     // Search user uploads
-    if (!source || source === 'uploads') {
-      let uploadQuery = 'SELECT ul.*, c.name as category_name, c.color as category_color, c.icon as icon, "upload" as source FROM user_lyrics ul LEFT JOIN categories c ON ul.category_id = c.id WHERE ul.is_public = 1';
+    if (!source || source === 'uploads' || source === 'all') {
+      let uploadQuery = 'SELECT ul.id, ul.title, ul.content, ul.category_id, ul.filename, ul.file_size, ul.upload_date, ul.created_by, c.name as category_name, c.color as category_color, c.icon as icon FROM user_lyrics ul LEFT JOIN categories c ON ul.category_id = c.id WHERE ul.is_public = 1';
       const uploadParams = [];
 
-      if (q) {
-        uploadQuery += ' AND ul.title LIKE ?';
-        uploadParams.push(`%${q}%`);
+      if (q && q.trim()) {
+        uploadQuery += ' AND (ul.title LIKE ? OR ul.content LIKE ?)';
+        uploadParams.push(`%${q}%`, `%${q}%`);
       }
 
-      if (category) {
+      if (category && category.trim()) {
         uploadQuery += ' AND c.name = ?';
         uploadParams.push(category);
       }
 
-      uploadQuery += ' ORDER BY ul.upload_date DESC LIMIT 10';
+      uploadQuery += ' ORDER BY ul.upload_date DESC LIMIT 20';
 
       const uploadResults = await dbQuery(uploadQuery, uploadParams);
-      results.push(...uploadResults.rows);
+      
+      // Map database fields to match API format
+      uploadResults.rows.forEach(row => {
+        results.push({
+          id: row.id,
+          trackName: row.title,
+          artistName: row.created_by || 'Unknown Artist',
+          albumName: row.filename || 'User Upload',
+          plainLyrics: row.content,
+          syncedLyrics: null,
+          instrumental: false,
+          source: 'upload',
+          category_name: row.category_name,
+          category_color: row.category_color,
+          icon: row.icon,
+          duration: null
+        });
+      });
+      
+      console.log(`✅ Found ${uploadResults.rows.length} uploads`);
     }
 
     // Search LRCLIB API
-    if (!source || source === 'api') {
-      try {
-        const lrclibResponse = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(q || '')}`);
-        if (lrclibResponse.ok) {
-          const apiResults = await lrclibResponse.json();
-          if (Array.isArray(apiResults)) {
-            apiResults.forEach(item => {
-              results.push({
-                ...item,
-                source: 'api',
-                category_name: null,
-                category_color: null,
-                icon: null
+    if (!source || source === 'api' || source === 'all') {
+      if (q && q.trim()) {
+        try {
+          const lrclibResponse = await fetch(`https://lrclib.net/api/search?q=${encodeURIComponent(q)}`);
+          if (lrclibResponse.ok) {
+            const apiResults = await lrclibResponse.json();
+            if (Array.isArray(apiResults)) {
+              apiResults.forEach(item => {
+                results.push({
+                  ...item,
+                  source: 'api',
+                  category_name: null,
+                  category_color: null,
+                  icon: null
+                });
               });
-            });
+            }
+            console.log(`✅ Found ${apiResults.length} API results`);
           }
+        } catch (apiError) {
+          console.error('LRCLIB API error:', apiError);
         }
-      } catch (apiError) {
-        console.error('LRCLIB API error:', apiError);
       }
     }
 
+    console.log(`📊 Total results: ${results.length}`);
     res.json(results.slice(0, 20)); // Limit total results
   } catch (error) {
+    console.error('❌ Search error:', error);
     res.status(500).json({ error: error.message });
   }
 });
